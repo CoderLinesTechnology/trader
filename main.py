@@ -13,182 +13,195 @@ from textblob import TextBlob
 import ccxt
 from datetime import datetime
 from time import time
-from quart import Quart, jsonify
-
+from quart import Quart, jsonify, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import nest_asyncio
 
-# Apply nest_asyncio to allow nested event loops
+# Apply nest_asyncio for async loop compatibility
 nest_asyncio.apply()
 
-# Setup logging
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Validate required environment variables
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TWITTER_BEARER = os.environ.get('TWITTER_BEARER')
-if not TELEGRAM_TOKEN or not TWITTER_BEARER:
-    logger.error("Missing required environment variables: TELEGRAM_TOKEN and/or TWITTER_BEARER")
+# Validate environment variables
+REQUIRED_ENV = ['TELEGRAM_TOKEN', 'TWITTER_BEARER']
+missing = [var for var in REQUIRED_ENV if not os.getenv(var)]
+if missing:
+    logger.critical(f"Missing environment variables: {', '.join(missing)}")
     exit(1)
 
-# Configuration constants
-COINGECKO_API = "https://api.coingecko.com/api/v3"
-DAYS_TO_PREDICT = 7
-SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"
-cache = {}
+# Configuration
+CONFIG = {
+    'COINGECKO_API': "https://api.coingecko.com/api/v3",
+    'DAYS_TO_PREDICT': 7,
+    'CACHE_TTL': 300,  # 5 minutes
+    'TWITTER_RATE_LIMIT': 60,  # seconds between requests
+    'PORT': 10000  # Render required port
+}
 
-# Create Quart app for health checks
+# Initialize components
+cache = {}
+binance_api = ccxt.binance()
 web_app = Quart(__name__)
+
+class TwitterAPI:
+    """Managed Twitter API client with rate limiting"""
+    def __init__(self):
+        self.session = aiohttp.ClientSession()
+        self.last_request = 0
+        
+    async def get_sentiment(self, ticker: str):
+        """Get crypto sentiment with rate limiting"""
+        try:
+            # Rate limiting
+            elapsed = time() - self.last_request
+            if elapsed < CONFIG['TWITTER_RATE_LIMIT']:
+                await asyncio.sleep(CONFIG['TWITTER_RATE_LIMIT'] - elapsed)
+                
+            params = {
+                'query': f'{ticker} cryptocurrency',
+                'max_results': 50,
+                'tweet.fields': 'created_at'
+            }
+            headers = {'Authorization': f'Bearer {os.getenv("TWITTER_BEARER")}'}
+            
+            async with self.session.get(
+                'https://api.twitter.com/2/tweets/search/recent',
+                params=params,
+                headers=headers
+            ) as response:
+                self.last_request = time()
+                
+                if response.status == 429:
+                    logger.warning("Twitter API rate limit reached")
+                    return {'sentiment': 0, 'count': 0}
+                
+                if response.status != 200:
+                    logger.error(f"Twitter API error: {response.status}")
+                    return {'sentiment': 0, 'count': 0}
+                
+                data = await response.json()
+                tweets = data.get('data', [])
+                sentiments = [
+                    TextBlob(t['text']).sentiment.polarity 
+                    for t in tweets if 'text' in t
+                ]
+                return {
+                    'sentiment': np.mean(sentiments) if sentiments else 0,
+                    'count': len(tweets)
+                }
+                
+        except Exception as e:
+            logger.error(f"Twitter API failure: {str(e)}")
+            return {'sentiment': 0, 'count': 0}
+
+# Initialize services
+twitter_client = TwitterAPI()
 
 @web_app.route('/health')
 async def health_check():
-    return jsonify({"status": "OK"})
+    """Render health check endpoint"""
+    return jsonify(status="OK", timestamp=datetime.utcnow().isoformat())
 
-async def run_quart():
-    """Run the Quart web server for health checks"""
-    await web_app.run_task(host='0.0.0.0', port=5000)
+async def run_web_server():
+    """Run Quart web server for Render requirements"""
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', CONFIG['PORT'])
+    await site.start()
 
-
-# Static mapping for 20 common cryptocurrencies
+# Crypto data management
 COIN_MAPPING = {
-    "btc": "bitcoin",
-    "eth": "ethereum",
-    "doge": "dogecoin",
-    "ltc": "litecoin",
-    "bnb": "binancecoin",
-    "ada": "cardano",
-    "xrp": "ripple",
-    "dot": "polkadot",
-    "link": "chainlink",
-    "uni": "uniswap",
-    "sol": "solana",
-    "avax": "avalanche-2",
-    "matic": "matic-network",
-    "algo": "algorand",
-    "vet": "vechain",
-    "fil": "filecoin",
-    "atom": "cosmos",
-    "trx": "tron",
-    "xlm": "stellar",
-    "xtz": "tezos"
+    'btc': 'bitcoin', 'eth': 'ethereum', 'doge': 'dogecoin',
+    'bnb': 'binancecoin', 'ada': 'cardano', 'xrp': 'ripple',
+    'sol': 'solana', 'dot': 'polkadot', 'matic': 'matic-network'
 }
 
+async def fetch_data(url: str):
+    """Generic API fetcher with error handling"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"API Error {response.status} from {url}")
+                    return None
+                return await response.json()
+    except Exception as e:
+        logger.error(f"Fetch error: {str(e)}")
+        return None
 
-# --- Asynchronous HTTP helper using aiohttp ---
-async def fetch_json(url, params=None, headers=None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, headers=headers) as response:
-            if response.status != 200:
-                text = await response.text()
-                logging.error(f"Error fetching {url}: {response.status} {text}")
-                raise ValueError(f"Error fetching {url}: {response.status}")
-            return await response.json()
-
-# --- Data fetching functions ---
-# Historical data from CoinGecko using the static mapping
 async def get_crypto_data(ticker: str):
+    """Get historical data with caching"""
+    cache_key = f'coingecko_{ticker}'
     coin_id = COIN_MAPPING.get(ticker.lower(), ticker.lower())
-    cache_key = f"{coin_id}_market_chart"
-    # Cache duration in seconds (e.g., 300 seconds = 5 minutes)
-    cache_duration = 300
-    if cache_key in cache and time() - cache[cache_key]['timestamp'] < cache_duration:
-        logging.info("Using cached data")
-        return cache[cache_key]['data']
     
-    url = f"{COINGECKO_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
-    data = await fetch_json(url)
-    if 'prices' not in data or 'total_volumes' not in data:
-        logging.error(f"Invalid data received from CoinGecko for {coin_id}: {data}")
-        raise ValueError("Invalid data received from CoinGecko API.")
+    if cache_key in cache:
+        if time() - cache[cache_key]['timestamp'] < CONFIG['CACHE_TTL']:
+            logger.info("Using cached CoinGecko data")
+            return cache[cache_key]['data']
     
-    prices_df = pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
-    volumes_df = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
-    df = pd.merge(prices_df, volumes_df, on='timestamp')
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.sort_values('timestamp', inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    url = f"{CONFIG['COINGECKO_API']}/coins/{coin_id}/market_chart"
+    params = {'vs_currency': 'usd', 'days': 365}
     
-    # Cache the result along with a timestamp
-    cache[cache_key] = {"timestamp": time(), "data": df}
-    return df
+    data = await fetch_data(f"{url}?{aiohttp.client.helpers.urlencode(params)}")
+    if not data or 'prices' not in data:
+        return None
+    
+    try:
+        df = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        cache[cache_key] = {'timestamp': time(), 'data': df}
+        return df
+    except Exception as e:
+        logger.error(f"Data processing error: {str(e)}")
+        return None
 
-# Real-time data from Binance (wrapped synchronous call)
-async def get_real_time_data(ticker: str):
-    def fetch():
-        ticker_data = BINANCE_API.fetch_ticker(f"{ticker.upper()}/USDT")
-        return {
-            'price': ticker_data['last'],
-            'volume': ticker_data['baseVolume'],
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    return await asyncio.to_thread(fetch)
-
-# Sentiment analysis from Twitter using aiohttp
-async def get_sentiment(ticker: str):
-    query = f"{ticker} cryptocurrency"
-    params = {'query': query, 'max_results': 100}
-    headers = {"Authorization": f"Bearer {TWITTER_BEARER}"}
-    data = await fetch_json(SENTIMENT_API, params=params, headers=headers)
-    tweets = data.get('data', [])
-    sentiments = [TextBlob(tweet.get('text', '')).sentiment.polarity for tweet in tweets]
-    avg_sentiment = np.mean(sentiments) if sentiments else 0
-    return {
-        'sentiment': avg_sentiment,
-        'tweet_count': len(tweets)
-    }
-
-# --- Calculation functions (synchronous) ---
-def calculate_volatility(data):
-    returns = data['prices'].pct_change().dropna()
+# Prediction models
+def calculate_volatility(data: pd.DataFrame):
+    """Calculate annualized volatility"""
+    returns = data['price'].pct_change().dropna()
     return returns.std() * np.sqrt(365)
 
-def calculate_risk_reward(data, prediction):
-    current_price = data['prices'].iloc[-1]
-    stop_loss = current_price * 0.95  # 5% stop loss
-    take_profit = prediction * 1.10   # 10% target
-    risk = current_price - stop_loss
-    if risk == 0:
-        risk = 1e-6
-    reward = take_profit - current_price
-    return reward / risk
-
-# --- Prediction strategy functions (synchronous) ---
-def technical_analysis_prediction(data):
-    df = data.copy()
-    df['ma50'] = df['prices'].rolling(50).mean()
-    df['ma200'] = df['prices'].rolling(200).mean()
-    df['rsi'] = ta.momentum.RSIIndicator(df['prices'], window=14).rsi()
-    df['volume_ma'] = df['volume'].rolling(14).mean()
+def technical_analysis(df: pd.DataFrame):
+    """Technical analysis prediction"""
+    df = df[-200:]  # Use last 200 data points
+    df['ma50'] = df['price'].rolling(50).mean()
+    df['ma200'] = df['price'].rolling(200).mean()
+    df['rsi'] = ta.momentum.RSIIndicator(df['price'], window=14).rsi()
+    
     signals = []
     if df['ma50'].iloc[-1] > df['ma200'].iloc[-1]:
-        signals.append("Bullish MA Crossover")
+        signals.append('Golden Cross')
     if df['rsi'].iloc[-1] < 30:
-        signals.append("Oversold RSI")
+        signals.append('Oversold')
     elif df['rsi'].iloc[-1] > 70:
-        signals.append("Overbought RSI")
-    if df['volume'].iloc[-1] > df['volume_ma'].iloc[-1]:
-        signals.append("High Volume")
-    prediction = df['prices'].iloc[-1] * (1 + (0.001 * len(signals)))
+        signals.append('Overbought')
+    
+    prediction = df['price'].iloc[-1] * (1 + 0.005 * len(signals))
     volatility = calculate_volatility(df)
-    confidence = (len(signals) / 4) * (1 - volatility)
+    confidence = min(0.9, 0.3 + 0.1 * len(signals)) * (1 - volatility)
+    
     return {
-        'strategy': 'Technical Analysis',
-        'prediction': prediction,
+        'price': prediction,
         'confidence': confidence,
-        'signals': signals,
-        'volatility': volatility
+        'signals': signals
     }
 
-def lstm_prediction(data):
-    scaler = MinMaxScaler()
+def lstm_prediction(df: pd.DataFrame):
+    """LSTM model prediction"""
+    data = df['price'].values[-60:]
     if len(data) < 60:
-        raise ValueError("Not enough data for LSTM prediction.")
-    scaled_data = scaler.fit_transform(data['prices'].values.reshape(-1, 1))
+        return {'price': None, 'error': 'Insufficient data'}
+    
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+    
     model = Sequential([
         LSTM(50, return_sequences=True, input_shape=(60, 1)),
         LSTM(50),
@@ -196,87 +209,118 @@ def lstm_prediction(data):
     ])
     model.compile(optimizer='adam', loss='mse')
     model.fit(scaled_data, scaled_data, epochs=10, batch_size=32, verbose=0)
-    future_preds = []
+    
+    future = []
     current_batch = scaled_data[-60:].reshape(1, 60, 1)
-    for _ in range(DAYS_TO_PREDICT):
-        next_pred = model.predict(current_batch)
-        future_preds.append(next_pred[0, 0])
-        next_pred_reshaped = next_pred.reshape(1, 1, 1)
-        current_batch = np.concatenate([current_batch[:, 1:, :], next_pred_reshaped], axis=1)
-    prediction = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))[-1, 0]
-    volatility = calculate_volatility(data)
-    confidence = 0.7 * (1 - volatility)
+    for _ in range(CONFIG['DAYS_TO_PREDICT']):
+        pred = model.predict(current_batch)[0, 0]
+        future.append(pred)
+        current_batch = np.append(current_batch[:, 1:, :], [[[pred]]], axis=1)
+    
     return {
-        'strategy': 'LSTM',
-        'prediction': prediction,
-        'confidence': confidence,
-        'volatility': volatility
+        'price': scaler.inverse_transform([future])[0][-1],
+        'confidence': 0.7 * (1 - calculate_volatility(df))
     }
 
-def prophet_prediction(data):
-    df = data.rename(columns={'timestamp': 'ds', 'prices': 'y'})
-    df['ds'] = pd.to_datetime(df['ds'])
-    df.dropna(inplace=True)
-    if df.empty:
-        raise ValueError("Not enough data for Prophet model.")
-    model = Prophet(daily_seasonality=True)
-    model.fit(df)
-    future = model.make_future_dataframe(periods=DAYS_TO_PREDICT)
-    forecast = model.predict(future)
-    volatility = calculate_volatility(df)
-    confidence = 0.6 * (1 - volatility)
-    return {
-        'strategy': 'Prophet',
-        'prediction': forecast['yhat'][-1],
-        'confidence': confidence,
-        'volatility': volatility
-    }
-
-# --- Telegram bot handlers ---
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-     # Check if the update is a message and then reply
-    if update.message:
-        await update.message.reply("Hello, I'm your Crypto Assistant Bot! Use /predict to get predictions for any crypto.")
-    else:
-        logging.error(f"Received non-message update: {update}")
-
-async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ticker = context.args[0].lower()
+def prophet_prediction(df: pd.DataFrame):
+    """Prophet model prediction"""
     try:
-        data = await get_crypto_data(ticker)
-        sentiment = await get_sentiment(ticker)
-        
-        ta_results = technical_analysis_prediction(data)
-        lstm_results = lstm_prediction(data)
-        prophet_results = prophet_prediction(data)
-        
-        await update.message.reply(f"Prediction for {ticker.upper()}:\n"
-                                  f"Sentiment: {sentiment['sentiment']}\n"
-                                  f"Technical Analysis: {ta_results}\n"
-                                  f"LSTM Prediction: {lstm_results}\n"
-                                  f"Prophet Prediction: {prophet_results}\n")
+        prophet_df = df.reset_index().rename(columns={'timestamp': 'ds', 'price': 'y'})
+        model = Prophet(daily_seasonality=True)
+        model.fit(prophet_df)
+        future = model.make_future_dataframe(periods=CONFIG['DAYS_TO_PREDICT'])
+        forecast = model.predict(future)
+        return {
+            'price': forecast['yhat'].iloc[-1],
+            'confidence': 0.65 * (1 - calculate_volatility(df))
+        }
     except Exception as e:
-        await update.message.reply(f"Error: {str(e)}")
+        logger.error(f"Prophet error: {str(e)}")
+        return {'price': None, 'error': str(e)}
+
+# Telegram bot handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_markdown(
+        "🚀 *Crypto Prediction Bot*\n\n"
+        "Supported coins: BTC, ETH, DOGE, BNB, ADA, XRP, SOL, DOT, MATIC\n"
+        "Usage: `/predict <ticker>`\n"
+        "Example: `/predict btc`"
+    )
+
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle prediction requests"""
+    try:
+        ticker = context.args[0].lower() if context.args else 'btc'
+        cache_key = f"prediction_{ticker}"
+        
+        # Check cache first
+        if cache_key in cache and time() - cache[cache_key]['time'] < CONFIG['CACHE_TTL']:
+            logger.info("Using cached prediction")
+            results = cache[cache_key]['data']
+        else:
+            # Fetch fresh data
+            df = await get_crypto_data(ticker)
+            if df is None:
+                raise ValueError("Could not fetch price data")
+            
+            # Get predictions
+            results = {
+                'ta': technical_analysis(df),
+                'lstm': lstm_prediction(df),
+                'prophet': prophet_prediction(df),
+                'sentiment': await twitter_client.get_sentiment(ticker)
+            }
+            cache[cache_key] = {'time': time(), 'data': results}
+        
+        # Format response
+        response = [
+            f"📈 *{ticker.upper()} Predictions*",
+            f"📊 Sentiment: {results['sentiment']['sentiment']:.2f} ({results['sentiment']['count']} tweets)",
+            "\n*Technical Analysis*:",
+            f"Price: ${results['ta']['price']:.2f}",
+            f"Confidence: {results['ta']['confidence']:.1%}",
+            f"Signals: {', '.join(results['ta']['signals'] or ['None'])}",
+            "\n*LSTM Model*:",
+            f"Price: ${results['lstm']['price']:.2f}",
+            f"Confidence: {results['lstm']['confidence']:.1%}",
+            "\n*Prophet Model*:",
+            f"Price: ${results['prophet']['price']:.2f}",
+            f"Confidence: {results['prophet']['confidence']:.1%}",
+        ]
+        
+        await update.message.reply_markdown('\n'.join(response))
+        
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        await update.message.reply_markdown("❌ *Error*: Could not generate predictions. Please try again later.")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Telegram errors"""
+    logger.error(f"Update {update} caused error: {context.error}")
+    if update and hasattr(update, 'message'):
+        await update.message.reply_text("⚠️ An error occurred. Please try again later.")
 
 async def main():
-    """Main async function to run both Quart and Telegram bot"""
-    # Start both services concurrently using asyncio.gather
-    quart_task = asyncio.create_task(run_quart())
+    """Main async entry point"""
+    # Create Telegram application
+    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
     
-    # Initialize and run Telegram bot
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_handler))
-    application.add_handler(CommandHandler("predict", predict_handler))
+    # Register handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("predict", predict))
+    application.add_error_handler(error_handler)
     
-    # Run both services concurrently
-    await asyncio.gather(application.run_polling(), quart_task)
+    # Start services
+    await asyncio.gather(
+        run_web_server(),
+        application.run_polling()
+    )
 
 if __name__ == '__main__':
     try:
-        # Apply nest_asyncio to patch the event loop
-        nest_asyncio.apply()
-        asyncio.run(main())  # This runs both services without conflicting.
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.critical(f"Critical failure: {str(e)}")
