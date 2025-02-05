@@ -267,7 +267,7 @@ async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Crypto Prediction Bot\nUse /predict [ticker]")
 
-def main():
+async def main():
     quart_task = asyncio.create_task(web_app.run_task(
         host='0.0.0.0', 
         port=10000  # Render requires port 10000
