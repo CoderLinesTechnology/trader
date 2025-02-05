@@ -22,6 +22,7 @@ COINGECKO_API = "https://api.coingecko.com/api/v3"
 BINANCE_API = ccxt.binance()
 DAYS_TO_PREDICT = 7
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Real-time Data Streaming
 def get_real_time_data(symbol):
