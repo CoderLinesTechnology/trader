@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import aiohttp
-import logging
 import pandas as pd
 import numpy as np
 from prophet import Prophet
@@ -24,7 +23,6 @@ nest_asyncio.apply()
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
-web_app = Quart(__name__)
 
 # Validate required environment variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -217,87 +215,48 @@ def prophet_prediction(data):
     model.fit(df)
     future = model.make_future_dataframe(periods=DAYS_TO_PREDICT)
     forecast = model.predict(future)
-    volatility = calculate_volatility(data)
-    conf_range = forecast['yhat_upper'].iloc[-1] - forecast['yhat_lower'].iloc[-1]
-    confidence = (1 - (conf_range / forecast['yhat'].iloc[-1])) * (1 - volatility)
+    volatility = calculate_volatility(df)
+    confidence = 0.6 * (1 - volatility)
     return {
         'strategy': 'Prophet',
-        'prediction': forecast['yhat'].iloc[-1],
+        'prediction': forecast['yhat'][-1],
         'confidence': confidence,
         'volatility': volatility
     }
 
-# --- Telegram Bot Handlers ---
-async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ticker = context.args[0].lower() if context.args else 'btc'
+# --- Telegram bot handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply("Hello, I'm your Crypto Assistant Bot! Use /predict to get predictions for any crypto.")
+
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ticker = context.args[0].lower()
     try:
-        # Asynchronously fetch historical data, real-time data, and sentiment
-        crypto_data = await get_crypto_data(ticker)
-        real_time_data = await get_real_time_data(ticker)
+        data = await get_crypto_data(ticker)
         sentiment = await get_sentiment(ticker)
         
-        # Run prediction strategies synchronously (could be offloaded if needed)
-        tech_result = technical_analysis_prediction(crypto_data)
-        lstm_result = lstm_prediction(crypto_data)
-        prophet_result = prophet_prediction(crypto_data)
-        results = [tech_result, lstm_result, prophet_result]
-        best_strategy = max(results, key=lambda x: x['confidence'])
-        risk_reward = calculate_risk_reward(crypto_data, best_strategy['prediction'])
+        ta_results = technical_analysis_prediction(data)
+        lstm_results = lstm_prediction(data)
+        prophet_results = prophet_prediction(data)
         
-        response = (
-            f"📈 **{ticker.upper()}/USDT {DAYS_TO_PREDICT}-Day Predictions**\n\n"
-            f"• Real-Time Price: ${real_time_data['price']:.2f}\n"
-            f"• Volume (24h): {real_time_data['volume']:.2f}\n"
-            f"• Sentiment: {sentiment['sentiment']:.2f} ({sentiment['tweet_count']} tweets)\n\n"
-        )
-        for result in results:
-            response += (
-                f"• {result['strategy']}:\n"
-                f"  Price: ${result['prediction']:.2f}\n"
-                f"  Confidence: {result['confidence']*100:.1f}%\n"
-                f"  Volatility: {result['volatility']*100:.1f}%\n"
-            )
-            if 'signals' in result and result['signals']:
-                response += f"  Signals: {', '.join(result['signals'])}\n"
-        response += (
-            f"\n🌟 **Recommended Strategy**: {best_strategy['strategy']} "
-            f"(Confidence: {best_strategy['confidence']*100:.1f}%)\n"
-            f"📊 **Risk/Reward Ratio**: {risk_reward:.2f}\n"
-        )
-        await update.message.reply_text(response)
+        await update.message.reply(f"Prediction for {ticker.upper()}:\n"
+                                  f"Sentiment: {sentiment['sentiment']}\n"
+                                  f"Technical Analysis: {ta_results}\n"
+                                  f"LSTM Prediction: {lstm_results}\n"
+                                  f"Prophet Prediction: {prophet_results}\n")
     except Exception as e:
-        logging.error(f"Error in predict_handler: {e}")
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply(f"Error: {str(e)}")
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Crypto Prediction Bot\nUse /predict [ticker]")
-
-
-
-async def main():
-    # Start Quart server in the background
-    quart_task = asyncio.create_task(web_app.run_task(
-        host='0.0.0.0', 
-        port=10000,
-        use_reloader=False
-    ))
-
-    # Start Telegram bot
+def main():
+    # Setup Telegram bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_handler))
-    application.add_handler(CommandHandler("predict", predict_handler))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("predict", predict))
 
-    # Run the bot
-    await application.run_polling()
+    # Run the Telegram bot and Quart web server concurrently
+    loop = asyncio.get_event_loop()
+    loop.create_task(web_app.run_task(host="0.0.0.0", port=5000))
+    application.run_polling()
+
 
 if __name__ == '__main__':
-    try:
-        loop = asyncio.get_event_loop()
-
-        if loop.is_running():
-            loop.create_task(main())  # This is when the event loop is already running
-        else:
-            asyncio.run(main())  # Standard case for a new event loop
-    except Exception as e:
-        logging.error(f"Error starting bot: {e}")
-        
+    main()
