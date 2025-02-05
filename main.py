@@ -176,15 +176,14 @@ def prophet_prediction(data):
 
 # Data Fetching from CoinGecko using the COIN_MAPPING dictionary
 def get_crypto_data(ticker):
-    """
-    Fetch historical market data from CoinGecko.
-    Uses COIN_MAPPING to convert a ticker (e.g. "btc") to a CoinGecko coin id (e.g. "bitcoin").
-    """
     coin_id = COIN_MAPPING.get(ticker.lower(), ticker.lower())
-    url = f"{COINGECKO_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
+    url = f"{COINGECKE_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
     response = requests.get(url)
     data = response.json()
+    # Debug: log the response to understand its structure
+    logging.debug(f"CoinGecko response for {coin_id}: {data}")
     if 'prices' not in data or 'total_volumes' not in data:
+        logging.error(f"Invalid response received: {data}")
         raise ValueError("Invalid data received from CoinGecko API.")
     
     prices_df = pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
@@ -194,6 +193,7 @@ def get_crypto_data(ticker):
     df.sort_values('timestamp', inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
+
 
 # Telegram Bot Handlers
 async def analyze_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
