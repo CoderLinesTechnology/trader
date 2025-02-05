@@ -177,7 +177,7 @@ def prophet_prediction(data):
 # Data Fetching from CoinGecko using the COIN_MAPPING dictionary
 def get_crypto_data(ticker):
     coin_id = COIN_MAPPING.get(ticker.lower(), ticker.lower())
-    url = f"{COINGECKE_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
+    url = f"{COINGECKO_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
     response = requests.get(url)
     data = response.json()
     # Debug: log the response to understand its structure
