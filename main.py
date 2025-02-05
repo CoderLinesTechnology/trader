@@ -251,6 +251,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle prediction requests"""
     try:
+        twitter_client = context.bot_data['twitter_client']
         ticker = context.args[0].lower() if context.args else 'btc'
         cache_key = f"prediction_{ticker}"
         
@@ -317,6 +318,9 @@ async def main():
     async with TwitterAPI() as twitter_client:
         # Create Telegram application
         application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+
+        # Store Twitter client in bot data for handler access
+        application.bot_data['twitter_client'] = twitter_client
         
         # Register handlers
         application.add_handler(CommandHandler("start", start))
