@@ -77,7 +77,7 @@ async def get_crypto_data(ticker: str):
     logging.debug(f"CoinGecko response for {coin_id}: {data}")
     if 'prices' not in data or 'total_volumes' not in data:
         logging.error(f"Invalid data received from CoinGecko for {coin_id}: {data}")
-        raise ValueError("Invalid data received from CoinGecko API.")
+        raise ValueError(f"Invalid data received from CoinGecko API. url: {data}")
     prices_df = pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
     volumes_df = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
     df = pd.merge(prices_df, volumes_df, on='timestamp')
