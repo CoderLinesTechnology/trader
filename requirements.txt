@@ -1,5 +1,4 @@
 python-telegram-bot>=20.0
-aiohttp>=3.8.0
 pandas>=1.5.0
 numpy>=1.22.0
 prophet>=1.1.0
@@ -10,3 +9,4 @@ textblob>=0.17.1
 ccxt>=3.0.0
 nest_asyncio>=1.5.0
 quart>=0.18.0
+aiohttp==3.9.3
