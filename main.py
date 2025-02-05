@@ -233,10 +233,10 @@ def prophet_prediction(data):
     }
 
 # --- Telegram bot handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply("Hello, I'm your Crypto Assistant Bot! Use /predict to get predictions for any crypto.")
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].lower()
     try:
         data = await get_crypto_data(ticker)
