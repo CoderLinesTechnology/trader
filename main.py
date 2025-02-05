@@ -17,6 +17,8 @@ from quart import Quart, jsonify
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import nest_asyncio
+nest_asyncio.apply()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -267,16 +269,30 @@ async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Crypto Prediction Bot\nUse /predict [ticker]")
 
+
+
 async def main():
+    # Start Quart server in the background
     quart_task = asyncio.create_task(web_app.run_task(
         host='0.0.0.0', 
-        port=10000  # Render requires port 10000
+        port=10000,
+        use_reloader=False
     ))
+    
+    # Start Telegram bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("predict", predict_handler))
-    application.run_polling()
-    await quart_task
+    
+    # Run the bot
+    await application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(main())
+        else:
+            asyncio.run(main())
+    except Exception as e:
+        logging.error(f"Error starting bot: {e}")

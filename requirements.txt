@@ -9,3 +9,4 @@ prophet
 ta
 textblob
 ccxt
+nest_asyncio
