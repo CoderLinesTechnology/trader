@@ -276,6 +276,7 @@ def main():
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("predict", predict_handler))
     application.run_polling()
+    await quart_task
 
 if __name__ == '__main__':
     asyncio.run(main())
