@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import aiohttp
+import logging
 import pandas as pd
 import numpy as np
 from prophet import Prophet
@@ -22,6 +23,8 @@ nest_asyncio.apply()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
+
+web_app = Quart(__name__)
 
 # Validate required environment variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -278,21 +281,23 @@ async def main():
         port=10000,
         use_reloader=False
     ))
-    
+
     # Start Telegram bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("predict", predict_handler))
-    
+
     # Run the bot
     await application.run_polling()
 
 if __name__ == '__main__':
     try:
         loop = asyncio.get_event_loop()
+
         if loop.is_running():
-            loop.create_task(main())
+            loop.create_task(main())  # This is when the event loop is already running
         else:
-            asyncio.run(main())
+            asyncio.run(main())  # Standard case for a new event loop
     except Exception as e:
         logging.error(f"Error starting bot: {e}")
+        
