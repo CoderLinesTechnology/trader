@@ -24,28 +24,19 @@ DAYS_TO_PREDICT = 7
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
-# Helper function to fetch the CoinGecko coin id for a given ticker
-def get_coin_id(ticker):
-    """
-    Fetch the coin id from CoinGecko using the /coins/list endpoint.
-    For example, if ticker is 'btc', this should return 'bitcoin'.
-    """
-    url = f"{COINGECKO_API}/coins/list"
-    response = requests.get(url)
-    response.raise_for_status()
-    coins = response.json()
-    ticker = ticker.lower()
-    for coin in coins:
-        if coin.get("symbol", "").lower() == ticker:
-            return coin.get("id")
-    # Fallback: if no match found, return the ticker itself
-    return ticker
+# Static mapping: ticker -> CoinGecko coin id
+COIN_MAPPING = {
+    "btc": "bitcoin",
+    "eth": "ethereum",
+    "doge": "dogecoin",
+    # add more mappings as needed
+}
 
 # Real-time Data Streaming from Binance
 def get_real_time_data(ticker):
     """
     Fetch real-time data from Binance using the ticker symbol.
-    For Binance, the ticker should be in uppercase (e.g. "BTC" becomes "BTC/USDT").
+    For Binance, the symbol is uppercased and appended with '/USDT'.
     """
     ticker_data = BINANCE_API.fetch_ticker(f"{ticker.upper()}/USDT")
     return {
@@ -54,11 +45,11 @@ def get_real_time_data(ticker):
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-# Sentiment Analysis from Twitter
+# Sentiment Analysis using Twitter
 def get_sentiment(ticker):
     """
     Fetch social media sentiment from Twitter.
-    Uses the ticker in the query (e.g. "btc cryptocurrency").
+    The query uses the ticker (e.g., "btc cryptocurrency").
     """
     query = f"{ticker} cryptocurrency"
     params = {'query': query, 'max_results': 100}
@@ -83,11 +74,11 @@ def calculate_volatility(data):
 # Risk/Reward Calculation
 def calculate_risk_reward(data, prediction):
     """
-    Calculate a risk/reward ratio based on the current price and prediction.
+    Calculate a risk/reward ratio based on current price, stop-loss, and target.
     """
     current_price = data['prices'].iloc[-1]
     stop_loss = current_price * 0.95  # 5% stop loss
-    take_profit = prediction * 1.10  # 10% target
+    take_profit = prediction * 1.10   # 10% target
     risk = current_price - stop_loss
     if risk == 0:
         risk = 1e-6  # Avoid division by zero
@@ -132,7 +123,6 @@ def lstm_prediction(data):
         raise ValueError("Not enough data for LSTM prediction.")
         
     scaled_data = scaler.fit_transform(data['prices'].values.reshape(-1, 1))
-    
     model = Sequential([
         LSTM(50, return_sequences=True, input_shape=(60, 1)),
         LSTM(50),
@@ -161,7 +151,7 @@ def lstm_prediction(data):
     }
 
 def prophet_prediction(data):
-    """Strategy 3: Facebook's Prophet"""
+    """Strategy 3: Prophet Forecasting"""
     df = data.rename(columns={'timestamp': 'ds', 'prices': 'y'})
     df['ds'] = pd.to_datetime(df['ds'])
     df.dropna(inplace=True)
@@ -170,7 +160,6 @@ def prophet_prediction(data):
         
     model = Prophet(daily_seasonality=True)
     model.fit(df)
-    
     future = model.make_future_dataframe(periods=DAYS_TO_PREDICT)
     forecast = model.predict(future)
     
@@ -185,13 +174,13 @@ def prophet_prediction(data):
         'volatility': volatility
     }
 
-# Data Fetching from CoinGecko using coin id mapping
+# Data Fetching from CoinGecko using the COIN_MAPPING dictionary
 def get_crypto_data(ticker):
     """
     Fetch historical market data from CoinGecko.
-    Converts the given ticker (e.g. "btc") to the appropriate CoinGecko coin id.
+    Uses COIN_MAPPING to convert a ticker (e.g. "btc") to a CoinGecko coin id (e.g. "bitcoin").
     """
-    coin_id = get_coin_id(ticker)
+    coin_id = COIN_MAPPING.get(ticker.lower(), ticker.lower())
     url = f"{COINGECKO_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
     response = requests.get(url)
     data = response.json()
@@ -200,7 +189,6 @@ def get_crypto_data(ticker):
     
     prices_df = pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
     volumes_df = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
-    
     df = pd.merge(prices_df, volumes_df, on='timestamp')
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.sort_values('timestamp', inplace=True)
@@ -209,11 +197,12 @@ def get_crypto_data(ticker):
 
 # Telegram Bot Handlers
 async def analyze_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Use the ticker provided (default 'btc')
     ticker = context.args[0].lower() if context.args else 'btc'
     try:
-        # For CoinGecko: map ticker to coin id (e.g., "btc" -> "bitcoin")
+        # Historical data: use mapping ("btc" -> "bitcoin")
         data = get_crypto_data(ticker)
-        # For Binance: use ticker directly (e.g., "btc" becomes "BTC/USDT")
+        # Real-time data: use ticker directly ("btc" -> "BTC/USDT")
         real_time_data = get_real_time_data(ticker)
         sentiment = get_sentiment(ticker)
         
@@ -258,6 +247,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Crypto Prediction Bot\nUse /predict [ticker]")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # For predict command, we use the same logic as in analyze_crypto
     ticker = context.args[0].lower() if context.args else 'btc'
     try:
         data = get_crypto_data(ticker)
@@ -307,8 +297,7 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("predict", predict))
-    
-    # Optionally, if you wish to use analyze_crypto as an additional command:
+    # Optionally, uncomment the next line to use an additional command:
     # application.add_handler(CommandHandler("analyze", analyze_crypto))
     
     application.run_polling()
