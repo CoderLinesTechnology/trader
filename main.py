@@ -146,10 +146,9 @@ async def get_crypto_data(ticker: str):
             logger.info("Using cached CoinGecko data")
             return cache[cache_key]['data']
     
-    url = f"{CONFIG['COINGECKO_API']}/coins/{coin_id}/market_chart"
-    params = {'vs_currency': 'usd', 'days': 365}
+    url = f"{CONFIG['COINGECKO_API']}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
     
-    data = await fetch_data(f"{url}?{aiohttp.client.helpers.urlencode(params)}")
+    data = await fetch_data(f"{url}")
     if not data or 'prices' not in data:
         return None
     
