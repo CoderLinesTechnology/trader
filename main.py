@@ -163,11 +163,144 @@ async def get_crypto_data(ticker: str):
         logger.error(f"Data processing error: {str(e)}")
         return None
 
-# Prediction models (keep the same as before)
-# ... [Keep all prediction model functions unchanged] ...
+# Prediction models
+def calculate_volatility(data: pd.DataFrame):
+    """Calculate annualized volatility"""
+    returns = data['price'].pct_change().dropna()
+    return returns.std() * np.sqrt(365)
 
-# Telegram bot handlers (keep the same as before)
-# ... [Keep all Telegram handler functions unchanged] ...
+def technical_analysis(df: pd.DataFrame):
+    """Technical analysis prediction"""
+    df = df[-200:]  # Use last 200 data points
+    df['ma50'] = df['price'].rolling(50).mean()
+    df['ma200'] = df['price'].rolling(200).mean()
+    df['rsi'] = ta.momentum.RSIIndicator(df['price'], window=14).rsi()
+    
+    signals = []
+    if df['ma50'].iloc[-1] > df['ma200'].iloc[-1]:
+        signals.append('Golden Cross')
+    if df['rsi'].iloc[-1] < 30:
+        signals.append('Oversold')
+    elif df['rsi'].iloc[-1] > 70:
+        signals.append('Overbought')
+    
+    prediction = df['price'].iloc[-1] * (1 + 0.005 * len(signals))
+    volatility = calculate_volatility(df)
+    confidence = min(0.9, 0.3 + 0.1 * len(signals)) * (1 - volatility)
+    
+    return {
+        'price': prediction,
+        'confidence': confidence,
+        'signals': signals
+    }
+
+def lstm_prediction(df: pd.DataFrame):
+    """LSTM model prediction"""
+    data = df['price'].values[-60:]
+    if len(data) < 60:
+        return {'price': None, 'error': 'Insufficient data'}
+    
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+    
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(60, 1)),
+        LSTM(50),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    model.fit(scaled_data, scaled_data, epochs=10, batch_size=32, verbose=0)
+    
+    future = []
+    current_batch = scaled_data[-60:].reshape(1, 60, 1)
+    for _ in range(CONFIG['DAYS_TO_PREDICT']):
+        pred = model.predict(current_batch)[0, 0]
+        future.append(pred)
+        current_batch = np.append(current_batch[:, 1:, :], [[[pred]]], axis=1)
+    
+    return {
+        'price': scaler.inverse_transform([future])[0][-1],
+        'confidence': 0.7 * (1 - calculate_volatility(df))
+    }
+
+def prophet_prediction(df: pd.DataFrame):
+    """Prophet model prediction"""
+    try:
+        prophet_df = df.reset_index().rename(columns={'timestamp': 'ds', 'price': 'y'})
+        model = Prophet(daily_seasonality=True)
+        model.fit(prophet_df)
+        future = model.make_future_dataframe(periods=CONFIG['DAYS_TO_PREDICT'])
+        forecast = model.predict(future)
+        return {
+            'price': forecast['yhat'].iloc[-1],
+            'confidence': 0.65 * (1 - calculate_volatility(df))
+        }
+    except Exception as e:
+        logger.error(f"Prophet error: {str(e)}")
+        return {'price': None, 'error': str(e)}
+
+# Telegram bot handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_markdown(
+        "🚀 *Crypto Prediction Bot*\n\n"
+        "Supported coins: BTC, ETH, DOGE, BNB, ADA, XRP, SOL, DOT, MATIC\n"
+        "Usage: `/predict <ticker>`\n"
+        "Example: `/predict btc`"
+    )
+
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle prediction requests"""
+    try:
+        ticker = context.args[0].lower() if context.args else 'btc'
+        cache_key = f"prediction_{ticker}"
+        
+        # Check cache first
+        if cache_key in cache and time() - cache[cache_key]['time'] < CONFIG['CACHE_TTL']:
+            logger.info("Using cached prediction")
+            results = cache[cache_key]['data']
+        else:
+            # Fetch fresh data
+            df = await get_crypto_data(ticker)
+            if df is None:
+                raise ValueError("Could not fetch price data")
+            
+            # Get predictions
+            results = {
+                'ta': technical_analysis(df),
+                'lstm': lstm_prediction(df),
+                'prophet': prophet_prediction(df),
+                'sentiment': await twitter_client.get_sentiment(ticker)
+            }
+            cache[cache_key] = {'time': time(), 'data': results}
+        
+        # Format response
+        response = [
+            f"📈 *{ticker.upper()} Predictions*",
+            f"📊 Sentiment: {results['sentiment']['sentiment']:.2f} ({results['sentiment']['count']} tweets)",
+            "\n*Technical Analysis*:",
+            f"Price: ${results['ta']['price']:.2f}",
+            f"Confidence: {results['ta']['confidence']:.1%}",
+            f"Signals: {', '.join(results['ta']['signals'] or ['None'])}",
+            "\n*LSTM Model*:",
+            f"Price: ${results['lstm']['price']:.2f}",
+            f"Confidence: {results['lstm']['confidence']:.1%}",
+            "\n*Prophet Model*:",
+            f"Price: ${results['prophet']['price']:.2f}",
+            f"Confidence: {results['prophet']['confidence']:.1%}",
+        ]
+        
+        await update.message.reply_markdown('\n'.join(response))
+        
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        await update.message.reply_markdown("❌ *Error*: Could not generate predictions. Please try again later.")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Telegram errors"""
+    logger.error(f"Update {update} caused error: {context.error}")
+    if update and hasattr(update, 'message'):
+        await update.message.reply_text("⚠️ An error occurred. Please try again later.")
 
 async def run_web_server():
     """Run Quart web server for Render requirements"""
