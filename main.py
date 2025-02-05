@@ -260,7 +260,7 @@ async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     """Main async function to run both Quart and Telegram bot"""
-    # Start Quart server in the background
+    # Start both services concurrently using asyncio.gather
     quart_task = asyncio.create_task(run_quart())
     
     # Initialize and run Telegram bot
@@ -268,12 +268,14 @@ async def main():
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("predict", predict_handler))
     
-    # Run both services indefinitely
-    await application.run_polling()
+    # Run both services concurrently
+    await asyncio.gather(application.run_polling(), quart_task)
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        # Apply nest_asyncio to patch the event loop
+        nest_asyncio.apply()
+        asyncio.run(main())  # This runs both services without conflicting.
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
