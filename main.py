@@ -189,7 +189,7 @@ def prophet_prediction(data):
 # Telegram Bot Handlers
 # (Optional: if you wish to use this handler, update its signature.)
 async def analyze_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol = context.args[0].lower() if context.args else 'bitcoin'
+    symbol = context.args[0].lower() if context.args else 'BTC'
     
     try:
         data = get_crypto_data(symbol)
