@@ -18,27 +18,41 @@ from quart import Quart, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Validate required environment variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TWITTER_BEARER = os.environ.get('TWITTER_BEARER')
 if not TELEGRAM_TOKEN or not TWITTER_BEARER:
-    logging.error("Missing required environment variables: TELEGRAM_TOKEN and/or TWITTER_BEARER")
+    logger.error("Missing required environment variables: TELEGRAM_TOKEN and/or TWITTER_BEARER")
     exit(1)
 
 # Configuration constants
 COINGECKO_API = "https://api.coingecko.com/api/v3"
-BINANCE_API = ccxt.binance()  # synchronous; we will wrap calls
 DAYS_TO_PREDICT = 7
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 cache = {}
 
+# Create Quart app for health checks
+web_app = Quart(__name__)
+
+@web_app.route('/health')
+async def health_check():
+    return jsonify({"status": "OK"})
+
+async def run_quart():
+    """Run the Quart web server for health checks"""
+    await web_app.run_task(host='0.0.0.0', port=5000)
+    
 
 # Static mapping for 20 common cryptocurrencies
 COIN_MAPPING = {
@@ -64,12 +78,6 @@ COIN_MAPPING = {
     "xtz": "tezos"
 }
 
-# Create Quart app
-web_app = Quart(__name__)
-
-@web_app.route('/health')
-async def health_check():
-    return jsonify({"status": "OK"})
 
 # --- Asynchronous HTTP helper using aiohttp ---
 async def fetch_json(url, params=None, headers=None):
@@ -246,17 +254,23 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply(f"Error: {str(e)}")
 
-def main():
-    # Setup Telegram bot
+async def main():
+    """Main async function to run both Quart and Telegram bot"""
+    # Start Quart server in the background
+    quart_task = asyncio.create_task(run_quart())
+    
+    # Initialize and run Telegram bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("predict", predict))
-
-    # Run the Telegram bot and Quart web server concurrently
-    loop = asyncio.get_event_loop()
-    loop.create_task(web_app.run_task(host="0.0.0.0", port=5000))
-    application.run_polling()
-
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("predict", predict_handler))
+    
+    # Run both services indefinitely
+    await application.run_polling()
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
