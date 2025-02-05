@@ -121,6 +121,14 @@ def lstm_prediction(data):
         'volatility': volatility
     }
 
+# Data Fetching
+def get_crypto_data(symbol):
+    url = f"{COINGECKO_API}/coins/{symbol}/market_chart?vs_currency=usd&days=365"
+    response = requests.get(url)
+    data = response.json()
+    return pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
+
+
 def prophet_prediction(data):
     """Strategy 3: Facebook's Prophet"""
     df = data.rename(columns={'timestamp': 'ds', 'prices': 'y'})
