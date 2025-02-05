@@ -17,7 +17,7 @@ from datetime import datetime
 # Configuration
 STRATEGIES = ["LSTM", "Prophet", "Technical Analysis"]
 DAYS_TO_PREDICT = 7
-TELEGRAM_TOKEN = "7142941833:AAGEifBczBCZZD_WylJ70CtG9klasj-10jQ"
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 BINANCE_API = ccxt.binance()  # Real-time data
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"  # Example for sentiment
