@@ -1,3 +1,4 @@
+import os
 import logging
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
@@ -17,7 +18,7 @@ from datetime import datetime
 # Configuration
 STRATEGIES = ["LSTM", "Prophet", "Technical Analysis"]
 DAYS_TO_PREDICT = 7
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 BINANCE_API = ccxt.binance()  # Real-time data
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"  # Example for sentiment
