@@ -12,6 +12,8 @@ import ta
 from textblob import TextBlob
 import ccxt
 from datetime import datetime
+from time import time
+from quart import Quart, jsonify
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -32,6 +34,8 @@ BINANCE_API = ccxt.binance()  # synchronous; we will wrap calls
 DAYS_TO_PREDICT = 7
 SENTIMENT_API = "https://api.twitter.com/2/tweets/search/recent"
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+cache = {}
+
 
 # Static mapping for 20 common cryptocurrencies
 COIN_MAPPING = {
@@ -57,6 +61,13 @@ COIN_MAPPING = {
     "xtz": "tezos"
 }
 
+# Create Quart app
+web_app = Quart(__name__)
+
+@web_app.route('/health')
+async def health_check():
+    return jsonify({"status": "OK"})
+
 # --- Asynchronous HTTP helper using aiohttp ---
 async def fetch_json(url, params=None, headers=None):
     async with aiohttp.ClientSession() as session:
@@ -71,19 +82,28 @@ async def fetch_json(url, params=None, headers=None):
 # Historical data from CoinGecko using the static mapping
 async def get_crypto_data(ticker: str):
     coin_id = COIN_MAPPING.get(ticker.lower(), ticker.lower())
-    url = f"{COINGECKO_API}/coins/{coin_id}/market_chart"
-    params = {"vs_currency": "usd", "days": "365"}
-    data = await fetch_json(url, params=params)
-    logging.debug(f"CoinGecko response for {coin_id}: {data}")
+    cache_key = f"{coin_id}_market_chart"
+    # Cache duration in seconds (e.g., 300 seconds = 5 minutes)
+    cache_duration = 300
+    if cache_key in cache and time() - cache[cache_key]['timestamp'] < cache_duration:
+        logging.info("Using cached data")
+        return cache[cache_key]['data']
+    
+    url = f"{COINGECKO_API}/coins/{coin_id}/market_chart?vs_currency=usd&days=365"
+    data = await fetch_json(url)
     if 'prices' not in data or 'total_volumes' not in data:
         logging.error(f"Invalid data received from CoinGecko for {coin_id}: {data}")
-        raise ValueError(f"Invalid data received from CoinGecko API. url: {data}")
+        raise ValueError("Invalid data received from CoinGecko API.")
+    
     prices_df = pd.DataFrame(data['prices'], columns=['timestamp', 'prices'])
     volumes_df = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
     df = pd.merge(prices_df, volumes_df, on='timestamp')
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.sort_values('timestamp', inplace=True)
     df.reset_index(drop=True, inplace=True)
+    
+    # Cache the result along with a timestamp
+    cache[cache_key] = {"timestamp": time(), "data": df}
     return df
 
 # Real-time data from Binance (wrapped synchronous call)
@@ -248,10 +268,14 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Crypto Prediction Bot\nUse /predict [ticker]")
 
 def main():
+    quart_task = asyncio.create_task(web_app.run_task(
+        host='0.0.0.0', 
+        port=10000  # Render requires port 10000
+    ))
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("predict", predict_handler))
     application.run_polling()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

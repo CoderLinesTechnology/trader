@@ -1,4 +1,5 @@
 python-telegram-bot>=20.0
+quart>=0.18.0
 pandas
 numpy
 requests
