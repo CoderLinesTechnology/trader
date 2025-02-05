@@ -52,7 +52,7 @@ async def health_check():
 async def run_quart():
     """Run the Quart web server for health checks"""
     await web_app.run_task(host='0.0.0.0', port=5000)
-    
+
 
 # Static mapping for 20 common cryptocurrencies
 COIN_MAPPING = {
@@ -234,7 +234,11 @@ def prophet_prediction(data):
 
 # --- Telegram bot handlers ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply("Hello, I'm your Crypto Assistant Bot! Use /predict to get predictions for any crypto.")
+     # Check if the update is a message and then reply
+    if update.message:
+        await update.message.reply("Hello, I'm your Crypto Assistant Bot! Use /predict to get predictions for any crypto.")
+    else:
+        logging.error(f"Received non-message update: {update}")
 
 async def predict_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].lower()
