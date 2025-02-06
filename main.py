@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import aiohttp
+import nest_asyncio
 import pandas as pd
 import numpy as np
 from prophet import Prophet
@@ -14,9 +15,10 @@ import ccxt
 from datetime import datetime
 from time import time
 from quart import Quart, jsonify
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-import nest_asyncio
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+
+
 
 # Apply nest_asyncio for async loop compatibility
 nest_asyncio.apply()
@@ -238,63 +240,105 @@ def prophet_prediction(df: pd.DataFrame):
         logger.error(f"Prophet error: {str(e)}")
         return {'price': None, 'error': str(e)}
 
+
 # Telegram bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
-    await update.message.reply_markdown(
-        "🚀 *Crypto Prediction Bot*\n\n"
-        "Supported coins: BTC, ETH, DOGE, BNB, ADA, XRP, SOL, DOT, MATIC\n"
-        "Usage: `/predict <ticker>`\n"
-        "Example: `/predict btc`"
+    """Handle /start command and display coin buttons."""
+    # Build an inline keyboard with 3 buttons per row
+    keyboard = []
+    row = []
+    for idx, ticker in enumerate(COIN_MAPPING.keys(), start=1):
+        # Create a button with the ticker symbol (uppercased) as text
+        # and the ticker (lowercase) as callback_data
+        button = InlineKeyboardButton(text=ticker.upper(), callback_data=ticker)
+        row.append(button)
+        # Every 3 buttons, append the row to the keyboard and reset row
+        if idx % 3 == 0:
+            keyboard.append(row)
+            row = []
+    # If there are leftover buttons, append them as well
+    if row:
+        keyboard.append(row)
+    
+    # Create the markup with the inline keyboard
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Send the message with inline buttons
+    await update.message.reply_text(
+        "🚀 *Crypto Prediction Bot*\n\nSelect a coin:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle prediction requests"""
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button presses from inline keyboard by generating predictions."""
+    query = update.callback_query
+    await query.answer()
+    ticker = query.data.lower()
     try:
-        twitter_client = context.bot_data['twitter_client']
-        ticker = context.args[0].lower() if context.args else 'btc'
-        cache_key = f"prediction_{ticker}"
-        
-        # Check cache first
-        if cache_key in cache and time() - cache[cache_key]['time'] < CONFIG['CACHE_TTL']:
-            logger.info("Using cached prediction")
-            results = cache[cache_key]['data']
-        else:
-            # Fetch fresh data
-            df = await get_crypto_data(ticker)
-            if df is None:
-                raise ValueError("Could not fetch price data")
-            
-            # Get predictions
-            results = {
-                'ta': technical_analysis(df),
-                'lstm': lstm_prediction(df),
-                'prophet': prophet_prediction(df),
-                'sentiment': await twitter_client.get_sentiment(ticker)
-            }
-            cache[cache_key] = {'time': time(), 'data': results}
-        
-        # Format response
-        response = [
-            f"📈 *{ticker.upper()} Predictions*",
-            f"📊 Sentiment: {results['sentiment']['sentiment']:.2f} ({results['sentiment']['count']} tweets)",
-            "\n*Technical Analysis*:",
-            f"Price: ${results['ta']['price']:.2f}",
-            f"Confidence: {results['ta']['confidence']:.1%}",
-            f"Signals: {', '.join(results['ta']['signals'] or ['None'])}",
-            "\n*LSTM Model*:",
-            f"Price: ${results['lstm']['price']:.2f}",
-            f"Confidence: {results['lstm']['confidence']:.1%}",
-            "\n*Prophet Model*:",
-            f"Price: ${results['prophet']['price']:.2f}",
-            f"Confidence: {results['prophet']['confidence']:.1%}",
-        ]
-        
-        await update.message.reply_markdown('\n'.join(response))
-        
+        response_text = await generate_prediction(ticker)
+        await query.edit_message_text(text=response_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        await query.edit_message_text(
+            text="❌ *Error*: Could not generate predictions. Please try again later.",
+            parse_mode='Markdown'
+        )
+
+
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fallback /predict command handler which also uses the common prediction function."""
+    ticker = context.args[0].lower() if context.args else 'btc'
+    try:
+        response_text = await generate_prediction(ticker)
+        await update.message.reply_markdown(response_text)
     except Exception as e:
         logger.error(f"Prediction error: {str(e)}")
         await update.message.reply_markdown("❌ *Error*: Could not generate predictions. Please try again later.")
+
+
+
+
+
+async def generate_prediction(ticker: str) -> str:
+    """Generate prediction output for a given ticker."""
+    cache_key = f"prediction_{ticker}"
+    if cache_key in cache and time() - cache[cache_key]['time'] < CONFIG['CACHE_TTL']:
+        logger.info("Using cached prediction")
+        results = cache[cache_key]['data']
+    else:
+        df = await get_crypto_data(ticker)
+        if df is None:
+            raise ValueError("Could not fetch price data")
+        async with TwitterAPI() as twitter_client:
+            sentiment = await twitter_client.get_sentiment(ticker)
+        results = {
+            'ta': technical_analysis(df),
+            'lstm': lstm_prediction(df),
+            'prophet': prophet_prediction(df),
+            'sentiment': sentiment
+        }
+        cache[cache_key] = {'time': time(), 'data': results}
+    
+    response_lines = [
+        f"📈 *{ticker.upper()} Predictions*",
+        f"📊 Sentiment: {results['sentiment']['sentiment']:.2f} ({results['sentiment']['count']} tweets)",
+        "\n*Technical Analysis*: ",
+        f"Price: ${results['ta']['price']:.2f}",
+        f"Confidence: {results['ta']['confidence']:.1%}",
+        f"Signals: {', '.join(results['ta']['signals'] or ['None'])}",
+        "\n*LSTM Model*: ",
+        f"Price: ${results['lstm']['price']:.2f}",
+        f"Confidence: {results['lstm']['confidence']:.1%}",
+        "\n*Prophet Model*: ",
+        f"Price: ${results['prophet']['price']:.2f}",
+        f"Confidence: {results['prophet']['confidence']:.1%}"
+    ]
+    return "\n".join(response_lines)
+
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Handle Telegram errors"""
@@ -339,6 +383,7 @@ async def main():
         # Register handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("predict", predict))
+        application.add_handler(CallbackQueryHandler(button_handler))
         application.add_error_handler(error_handler)
         
         # Start services
