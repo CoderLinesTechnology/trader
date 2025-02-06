@@ -304,9 +304,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def run_web_server():
     """Run Quart web server for Render requirements"""
+    port = int(os.getenv("PORT", CONFIG['PORT']))  # Use the PORT env var, default to CONFIG['PORT'] if not set.
     runner = web.AppRunner(web_app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', CONFIG['PORT'])
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
 @web_app.route('/health')
